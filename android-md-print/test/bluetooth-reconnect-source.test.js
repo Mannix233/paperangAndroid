@@ -36,6 +36,16 @@ assert.match(activity, /writeDescriptor\(descriptor, value\)/);
 assert.match(activity, /Arrays\.copyOfRange\(packet, offset, end\)/);
 assert.match(activity, /scheduleBleReconnect\(\)/);
 assert.match(activity, /BLE_BACKGROUND_RETRY_DELAY_MS = 15000L/);
+assert.match(activity, /PREF_LAST_VERIFIED_ADDRESS/);
+assert.match(activity, /sameBluetoothAddress\(safeAddress\(device\), blePreferredAddress\)/);
+assert.match(activity, /connectPreferredBleDevice\(\)/);
+assert.match(activity, /rememberVerifiedBleDevice\(gatt == null \? null : gatt\.getDevice\(\)\)/);
+assert.match(activity, /BLE_NOTIFY_SUBSCRIBE_TIMEOUT_MS = 5000L/);
+assert.match(activity, /requestConnectionPriority\(BluetoothGatt\.CONNECTION_PRIORITY_HIGH\)/);
+assert.match(
+  activity,
+  /if \(legacyWrite != null && !legacyNotifies\.isEmpty\(\)\)[\s\S]{0,500}configureBleProtocolChannel\(g, legacyWrite, legacyNotifies/,
+);
 assert.doesNotMatch(
   activity,
   /ff00Notify == null[\s\S]{0,120}PAPERANG_FF00_STATUS_UUID/,

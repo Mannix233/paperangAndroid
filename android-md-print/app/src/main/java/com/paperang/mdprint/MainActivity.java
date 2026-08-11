@@ -81,6 +81,8 @@ public class MainActivity extends Activity {
     private static final String STATE_TEXT_SIZE = "state_text_size";
     private static final String STATE_DENSITY = "state_density";
     private static final String STATE_FEED = "state_feed";
+    private static final String BLUETOOTH_PREFS = "paperang_bluetooth";
+    private static final String PREF_LAST_VERIFIED_ADDRESS = "last_verified_address";
     private static final UUID PAPERANG_SERVICE_UUID = UUID.fromString("49535343-fe7d-4ae5-8fa9-9fafd205e455");
     private static final UUID PAPERANG_WRITE_UUID = UUID.fromString("49535343-8841-43f4-a8d4-ecbe34729bb3");
     private static final UUID PAPERANG_NOTIFY_UUID = UUID.fromString("49535343-1e4d-4bd9-ba61-23c647249616");
@@ -118,6 +120,7 @@ public class MainActivity extends Activity {
     private static final long BLE_BACKGROUND_RETRY_DELAY_MS = 15000L;
     private static final long BLE_CONNECT_TIMEOUT_MS = 40000L;
     private static final long BLE_PROTOCOL_REPLY_TIMEOUT_MS = 5000L;
+    private static final long BLE_NOTIFY_SUBSCRIBE_TIMEOUT_MS = 5000L;
     private static final long BLE_NO_RESPONSE_WATCHDOG_MS = 300L;
     private static final long BLE_WITH_RESPONSE_WATCHDOG_MS = 3000L;
     private static final int BLE_GATT_CHUNK_BYTES = 20;
@@ -177,11 +180,14 @@ public class MainActivity extends Activity {
     private int bleProtocolAttemptGeneration = 0;
     private int bleReconnectAttempt = 0;
     private boolean bleReconnectScheduled = false;
+    private boolean bleDirectFallbackAttempted = false;
     private boolean bleProtocolProbePending = false;
     private boolean bleAwaitingBattery = false;
     private boolean bleProtocolReady = false;
     private boolean blePrintPending = false;
     private boolean bleAwaitingPrintAck = false;
+    private BluetoothDevice blePreferredDevice;
+    private String blePreferredAddress = "";
     private boolean destroyed = false;
     private BluetoothSocket classicSocket;
     private OutputStream classicOutput;
@@ -202,6 +208,8 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         buildUi();
+        blePreferredAddress = getSharedPreferences(BLUETOOTH_PREFS, MODE_PRIVATE)
+                .getString(PREF_LAST_VERIFIED_ADDRESS, "");
         if (savedInstanceState != null) {
             editor.setText(savedInstanceState.getString(STATE_MARKDOWN, editor.getText().toString()));
             contentTextPx = savedInstanceState.getFloat(STATE_TEXT_SIZE, contentTextPx);
@@ -606,6 +614,12 @@ public class MainActivity extends Activity {
             requestNeededPermissions();
             return;
         }
+        if (readySilently()) {
+            log("Paperang is already connected.");
+            return;
+        }
+        resolvePreferredBleDevice();
+        bleDirectFallbackAttempted = false;
         bleReconnectAttempt = 0;
         bleScanAttempt = 0;
         startBleScanAttempt();
@@ -624,6 +638,7 @@ public class MainActivity extends Activity {
         scanner = adapter.getBluetoothLeScanner();
         if (scanner == null) {
             log("没有可用的 BLE 扫描器。");
+            if (!connectPreferredBleDevice()) scheduleBleReconnect();
             return;
         }
         bleScanAttempt++;
@@ -654,6 +669,7 @@ public class MainActivity extends Activity {
         }
         log("BLE 多次扫描未发现 P1，将继续后台重试。");
         setDeviceStatus("等待 P1 蓝牙广播", "通道：BLE");
+        if (connectPreferredBleDevice()) return;
         scheduleBleReconnect();
     }
 
@@ -700,6 +716,7 @@ public class MainActivity extends Activity {
         ScanRecord record = result.getScanRecord();
         String name = safeDeviceName(device);
         if (name.length() == 0 && record != null) name = record.getDeviceName();
+        if (sameBluetoothAddress(safeAddress(device), blePreferredAddress)) return true;
         if (isPaperangName(name)) return true;
         if (record == null || record.getServiceUuids() == null) return false;
         for (ParcelUuid service : record.getServiceUuids()) {
@@ -713,7 +730,62 @@ public class MainActivity extends Activity {
         return false;
     }
 
+    private boolean sameBluetoothAddress(String left, String right) {
+        return left != null && right != null && left.length() > 0 && left.equalsIgnoreCase(right);
+    }
+
+    private void resolvePreferredBleDevice() {
+        BluetoothAdapter adapter = bluetoothAdapter();
+        if (adapter == null) return;
+        if (blePreferredAddress.length() > 0) {
+            try {
+                blePreferredDevice = adapter.getRemoteDevice(blePreferredAddress);
+                return;
+            } catch (IllegalArgumentException | SecurityException ignored) {
+                blePreferredAddress = "";
+            }
+        }
+        try {
+            for (BluetoothDevice device : adapter.getBondedDevices()) {
+                if (!isPaperangName(safeDeviceName(device))) continue;
+                blePreferredDevice = device;
+                blePreferredAddress = safeAddress(device);
+                return;
+            }
+        } catch (SecurityException ignored) {
+        }
+    }
+
+    private boolean connectPreferredBleDevice() {
+        if (bleDirectFallbackAttempted || destroyed) return false;
+        resolvePreferredBleDevice();
+        if (blePreferredDevice == null || blePreferredAddress.length() == 0) return false;
+        bleDirectFallbackAttempted = true;
+        log("BLE scan did not see the saved Paperang address; trying the verified device directly: "
+                + blePreferredAddress);
+        setDeviceStatus("BLE 尝试上次成功的打印机", "通道：BLE");
+        connectBleDevice(blePreferredDevice);
+        return true;
+    }
+
+    private void rememberVerifiedBleDevice(BluetoothDevice device) {
+        if (device == null) return;
+        String address = safeAddress(device);
+        if (address.length() == 0) return;
+        blePreferredDevice = device;
+        blePreferredAddress = address;
+        getSharedPreferences(BLUETOOTH_PREFS, MODE_PRIVATE)
+                .edit()
+                .putString(PREF_LAST_VERIFIED_ADDRESS, address)
+                .apply();
+    }
+
     private void connectBleDevice(BluetoothDevice device) {
+        String liveAddress = safeAddress(device);
+        if (liveAddress.length() > 0) {
+            blePreferredDevice = device;
+            blePreferredAddress = liveAddress;
+        }
         closeClassic();
         closeGattConnection(gatt);
         final int connectionGeneration = ++bleConnectionGeneration;
@@ -817,6 +889,7 @@ public class MainActivity extends Activity {
                 log("BLE 已连接，正在发现服务...");
                 setDeviceStatus("BLE 已连接", "通道：BLE");
                 try {
+                    g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH);
                     if (!g.discoverServices()) {
                         log("BLE 服务发现未启动，正在重新扫描。");
                         closeGattConnection(g);
@@ -867,14 +940,16 @@ public class MainActivity extends Activity {
                         legacyService.getCharacteristic(PAPERANG_NOTIFY_UUID));
             }
 
-            if (ff00Write != null && !ff00Notifies.isEmpty()) {
-                bleFallbackWriteCharacteristic = legacyWrite;
+            // Match the proven desktop connection order: P1/P1L uses the 4953
+            // channel first; FF00 remains available as a verified fallback.
+            if (legacyWrite != null && !legacyNotifies.isEmpty()) {
+                bleFallbackWriteCharacteristic = ff00Write;
                 bleFallbackNotifyCharacteristics.clear();
-                bleFallbackNotifyCharacteristics.addAll(legacyNotifies);
-                bleFallbackRouteLabel = "通道：8841";
-                configureBleProtocolChannel(g, ff00Write, ff00Notifies, "通道：FF02");
-            } else if (legacyWrite != null && !legacyNotifies.isEmpty()) {
+                bleFallbackNotifyCharacteristics.addAll(ff00Notifies);
+                bleFallbackRouteLabel = "通道：FF02";
                 configureBleProtocolChannel(g, legacyWrite, legacyNotifies, "通道：8841");
+            } else if (ff00Write != null && !ff00Notifies.isEmpty()) {
+                configureBleProtocolChannel(g, ff00Write, ff00Notifies, "通道：FF02");
             } else {
                 log("没有找到可收发的 Paperang 4953/FF00 通道，正在重新扫描。");
                 closeGattConnection(g);
@@ -1003,7 +1078,19 @@ public class MainActivity extends Activity {
                         + " 的订阅写入未启动，继续尝试其他回执口。");
                 blePendingNotifyCharacteristic = null;
                 subscribeNextBleNotification(targetGatt);
+                return;
             }
+            final BluetoothGattCharacteristic pending = notify;
+            final int protocolGeneration = bleProtocolAttemptGeneration;
+            handler.postDelayed(() -> {
+                if (targetGatt != gatt
+                        || protocolGeneration != bleProtocolAttemptGeneration
+                        || blePendingNotifyCharacteristic != pending) return;
+                log("BLE notification subscription timed out on "
+                        + characteristicLabel(pending) + "; trying the next reply characteristic.");
+                blePendingNotifyCharacteristic = null;
+                subscribeNextBleNotification(targetGatt);
+            }, BLE_NOTIFY_SUBSCRIBE_TIMEOUT_MS);
         } catch (SecurityException e) {
             failBleProtocolChannel("BLE 通知权限被拒绝");
         }
@@ -1145,6 +1232,7 @@ public class MainActivity extends Activity {
         if (command == COMMAND_BATTERY_STATUS && bleAwaitingBattery) {
             bleAwaitingBattery = false;
             bleProtocolReady = true;
+            rememberVerifiedBleDevice(gatt == null ? null : gatt.getDevice());
             bleReplyLabel = characteristicLabel(sourceUuid);
             bleReconnectAttempt = 0;
             bleReconnectScheduled = false;
