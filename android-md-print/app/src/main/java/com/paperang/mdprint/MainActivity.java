@@ -2850,7 +2850,7 @@ public class MainActivity extends Activity {
                     writeType);
             if (!ok) {
                 bleWriting = false;
-                retryBlePacket("BLE 写入未启动");
+                retryBlePacket("BLE 写入未启动", false);
             } else {
                 long watchdogMs =
                         writeType == BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
@@ -2899,7 +2899,7 @@ public class MainActivity extends Activity {
             drainBleQueue();
             return;
         }
-        retryBlePacket("BLE 写入失败，状态 " + statusCode);
+        retryBlePacket("BLE 写入失败，状态 " + statusCode, true);
     }
 
     private void completeUnacknowledgedBleWrite(byte[] packet) {
@@ -2925,9 +2925,21 @@ public class MainActivity extends Activity {
         }, BLE_PROTOCOL_REPLY_TIMEOUT_MS);
     }
 
-    private void retryBlePacket(String reason) {
+    private void retryBlePacket(String reason, boolean transmissionUncertain) {
         byte[] failedPacket = bleInFlightPacket;
         bleInFlightPacket = null;
+        if (transmissionUncertain && failedPacket != null && blePrintPending) {
+            bleWriteRetryCount = 0;
+            bleWriteQueue.clear();
+            blePrintPending = false;
+            bleAwaitingPrintAck = false;
+            if (isCompleteProtocolPacket(failedPacket, COMMAND_FEED)) {
+                log(reason + "；结束走纸可能已经执行，为避免重复出纸，不再重试。请先检查实际出纸结果。");
+            } else {
+                log(reason + "；当前打印碎片是否送达无法确认。为避免重复碎片造成缺行或错位拼接，已停止本次打印，请整体重新打印。");
+            }
+            return;
+        }
         if (failedPacket != null && bleWriteRetryCount < MAX_BLE_WRITE_RETRIES) {
             bleWriteRetryCount++;
             bleWriteQueue.addFirst(failedPacket);
@@ -2938,6 +2950,15 @@ public class MainActivity extends Activity {
         bleWriteRetryCount = 0;
         bleWriteQueue.clear();
         log(reason + "，已停止本次打印，避免继续输出残缺内容，请重新打印。");
+    }
+
+    private boolean isCompleteProtocolPacket(byte[] packet, int command) {
+        if (packet == null || packet.length < 10) return false;
+        int payloadLength = (packet[3] & 0xff) | ((packet[4] & 0xff) << 8);
+        return (packet[0] & 0xff) == 2
+                && (packet[1] & 0xff) == command
+                && packet.length == payloadLength + 10
+                && (packet[packet.length - 1] & 0xff) == 3;
     }
 
     private boolean ready() {

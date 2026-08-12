@@ -42,6 +42,12 @@ assert.match(activity, /connectPreferredBleDevice\(\)/);
 assert.match(activity, /rememberVerifiedBleDevice\(gatt == null \? null : gatt\.getDevice\(\)\)/);
 assert.match(activity, /BLE_NOTIFY_SUBSCRIBE_TIMEOUT_MS = 5000L/);
 assert.match(activity, /requestConnectionPriority\(BluetoothGatt\.CONNECTION_PRIORITY_HIGH\)/);
+assert.match(activity, /retryBlePacket\("BLE 写入未启动", false\)/);
+assert.match(activity, /retryBlePacket\("BLE 写入失败，状态 " \+ statusCode, true\)/);
+assert.match(activity, /transmissionUncertain && failedPacket != null && blePrintPending/);
+assert.match(activity, /结束走纸可能已经执行，为避免重复出纸，不再重试/);
+assert.match(activity, /避免重复碎片造成缺行或错位拼接/);
+assert.match(activity, /packet\.length == payloadLength \+ 10/);
 assert.match(
   activity,
   /if \(legacyWrite != null && !legacyNotifies\.isEmpty\(\)\)[\s\S]{0,500}configureBleProtocolChannel\(g, legacyWrite, legacyNotifies/,
